@@ -25,11 +25,14 @@ contract Voting is Ownable {
         VotesTallied
     }
 
+    uint constant MIN_DESCRIPTION_LENGTH = 3; // anti-noise threshold for proposals
+
     WorkflowStatus public currentWorkflowStatus; // initialized to RegisteringVoters by default
     mapping(address => Voter) public voters;
     Proposal[] public proposals;
     uint public winningProposalId;
     uint public votesCount; // total votes cast, useful for the vote guard in closeVotingSession()
+    mapping(bytes32 => bool) private descriptionExists; // keccak fingerprints, blocks exact duplicates
 
     event VoterRegistered(address voterAddress);
     event WorkflowStatusChange(
@@ -39,22 +42,71 @@ contract Voting is Ownable {
     event ProposalRegistered(uint proposalId);
     event Voted(address voter, uint proposalId);
 
+    error VoterNotRegistered(address account);
+    error VoterAlreadyRegistered(address account);
+    error WrongWorkflowStatus(WorkflowStatus expected, WorkflowStatus current);
+    error AlreadyVoted(address account);
+    error InvalidProposalId(uint proposalId);
+    error NoProposalRegistered();
+    error NoVoteCast();
+    error DescriptionTooShort(uint provided, uint minimum);
+    error DuplicateProposal();
+
+    // Restricts a function to whitelisted voters (the admin counts only if registered)
+    modifier onlyVoters() {
+        require(
+            voters[msg.sender].isRegistered,
+            VoterNotRegistered(msg.sender)
+        );
+        _;
+    }
+
+    // Restricts a function to a specific workflow status
+    modifier onlyDuring(WorkflowStatus _status) {
+        require(
+            currentWorkflowStatus == _status,
+            WrongWorkflowStatus(_status, currentWorkflowStatus)
+        );
+        _;
+    }
+
     constructor() Ownable(msg.sender) {}
+
+    // Invariant, no defensive check needed: VotesTallied is only reachable through
+    // closeProposalsRegistration (guarantees proposals.length >= 1, array never shrinks)
+    // and closeVotingSession (guarantees >= 1 vote), and tallyVotes only writes
+    // in-bounds indices, so proposals[winningProposalId] always exists here.
+    function getWinner()
+        external
+        view
+        onlyDuring(WorkflowStatus.VotesTallied)
+        returns (Proposal memory)
+    {
+        return proposals[winningProposalId];
+    }
 
     // ==================================================
     //                  VOTER FUNCTIONS
     // ==================================================
-    function addProposal(string calldata _description) external {
-        // Only registered voters can add proposals, and it must be during the ProposalsRegistrationStarted phase
+    function addProposal(
+        string calldata _description
+    )
+        external
+        onlyVoters
+        onlyDuring(WorkflowStatus.ProposalsRegistrationStarted)
+    {
+        // Anti-noise: reject too-short descriptions (note: byte length, not characters)
+        uint descriptionLength = bytes(_description).length;
         require(
-            currentWorkflowStatus ==
-                WorkflowStatus.ProposalsRegistrationStarted,
-            "Proposals registration is not open"
+            descriptionLength >= MIN_DESCRIPTION_LENGTH,
+            DescriptionTooShort(descriptionLength, MIN_DESCRIPTION_LENGTH)
         );
-        require(
-            voters[msg.sender].isRegistered,
-            "Only registered voters can add proposals"
-        );
+
+        // Anti vote-splitting: reject byte-exact duplicates via keccak fingerprint.
+        // (Exact match only)
+        bytes32 descriptionHash = keccak256(bytes(_description));
+        require(!descriptionExists[descriptionHash], DuplicateProposal());
+        descriptionExists[descriptionHash] = true;
 
         // Add the proposal
         proposals.push(Proposal(_description, 0));
@@ -64,24 +116,11 @@ contract Voting is Ownable {
         emit ProposalRegistered(proposalId);
     }
 
-    function vote(uint _proposalId) external {
-        // Only registered voters can vote, and it must be during the VotingSessionStarted phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.VotingSessionStarted,
-            "Voting session is not open"
-        );
-        require(
-            voters[msg.sender].isRegistered,
-            "Only registered voters can vote"
-        );
-        require(
-            !voters[msg.sender].hasVoted,
-            "Voter has already voted"
-        );
-        require(
-            _proposalId < proposals.length,
-            "Invalid proposal ID"
-        );
+    function vote(
+        uint _proposalId
+    ) external onlyVoters onlyDuring(WorkflowStatus.VotingSessionStarted) {
+        require(!voters[msg.sender].hasVoted, AlreadyVoted(msg.sender));
+        require(_proposalId < proposals.length, InvalidProposalId(_proposalId));
 
         // Record the vote
         voters[msg.sender].hasVoted = true;
@@ -96,16 +135,13 @@ contract Voting is Ownable {
     // ==================================================
     //                  ADMIN FUNCTIONS
     // ==================================================
-    function registerVoter(address _voterAddress) external onlyOwner {
-        // Only the owner can register voters, and it must be during the RegisteringVoters phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.RegisteringVoters,
-            "Voters registration is not open"
-        );
+    function registerVoter(
+        address _voterAddress
+    ) external onlyOwner onlyDuring(WorkflowStatus.RegisteringVoters) {
         // A voter cannot be registered more than once
         require(
             !voters[_voterAddress].isRegistered,
-            "Voter is already registered"
+            VoterAlreadyRegistered(_voterAddress)
         );
 
         // Register the voter
@@ -119,13 +155,8 @@ contract Voting is Ownable {
     function closeVoterRegistrationAndStartProposalsRegistration()
         external
         onlyOwner
+        onlyDuring(WorkflowStatus.RegisteringVoters)
     {
-        // Only the owner can start the proposals registration, and it must be during the RegisteringVoters phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.RegisteringVoters,
-            "Cannot start proposals registration at this stage"
-        );
-
         // Change the workflow status to ProposalsRegistrationStarted so voter registration now closed
         WorkflowStatus previousStatus = currentWorkflowStatus;
         currentWorkflowStatus = WorkflowStatus.ProposalsRegistrationStarted;
@@ -134,15 +165,13 @@ contract Voting is Ownable {
         emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
     }
 
-    function closeProposalsRegistration() external onlyOwner {
-        // Only the owner can end the proposals registration, and it must be during the ProposalsRegistrationStarted phase
-        require(
-            currentWorkflowStatus ==
-                WorkflowStatus.ProposalsRegistrationStarted,
-            "Cannot end proposals registration at this stage"
-        );
+    function closeProposalsRegistration()
+        external
+        onlyOwner
+        onlyDuring(WorkflowStatus.ProposalsRegistrationStarted)
+    {
         // Guard: without any proposal the election could never produce a winner.
-        require(proposals.length > 0, "At least one proposal is required");
+        require(proposals.length > 0, NoProposalRegistered());
 
         // Change the workflow status to ProposalsRegistrationEnded so proposals registration now closed
         WorkflowStatus previousStatus = currentWorkflowStatus;
@@ -152,13 +181,11 @@ contract Voting is Ownable {
         emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
     }
 
-    function startVotingSession() external onlyOwner {
-        // Only the owner can start the voting session, and it must be during the ProposalsRegistrationEnded phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.ProposalsRegistrationEnded,
-            "Cannot start voting session at this stage"
-        );
-
+    function startVotingSession()
+        external
+        onlyOwner
+        onlyDuring(WorkflowStatus.ProposalsRegistrationEnded)
+    {
         // Change the workflow status to VotingSessionStarted so voting is now open
         WorkflowStatus previousStatus = currentWorkflowStatus;
         currentWorkflowStatus = WorkflowStatus.VotingSessionStarted;
@@ -167,14 +194,13 @@ contract Voting is Ownable {
         emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
     }
 
-    function closeVotingSession() external onlyOwner {
-        // Only the owner can end the voting session, and it must be during the VotingSessionStarted phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.VotingSessionStarted,
-            "Cannot end voting session at this stage"
-        );
+    function closeVotingSession()
+        external
+        onlyOwner
+        onlyDuring(WorkflowStatus.VotingSessionStarted)
+    {
         // Guard: a tally over zero votes would be meaningless.
-        require(votesCount > 0, "At least one vote is required");
+        require(votesCount > 0, NoVoteCast());
 
         // Change the workflow status to VotingSessionEnded so voting session now closed
         WorkflowStatus previousStatus = currentWorkflowStatus;
@@ -184,13 +210,11 @@ contract Voting is Ownable {
         emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
     }
 
-    function tallyVotes() external onlyOwner {
-        // Only the owner can tally votes, and it must be during the VotingSessionEnded phase
-        require(
-            currentWorkflowStatus == WorkflowStatus.VotingSessionEnded,
-            "Cannot tally votes at this stage"
-        );
-
+    function tallyVotes()
+        external
+        onlyOwner
+        onlyDuring(WorkflowStatus.VotingSessionEnded)
+    {
         // Tally the votes and determine the winning proposal
         uint winningVoteCount = 0;
         for (uint i = 0; i < proposals.length; i++) {
