@@ -12,7 +12,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 ///      (see README). One deployed contract = one election. The lifecycle is
 ///      enforced by a one-way state machine (WorkflowStatus): stages cannot be
 ///      skipped, replayed or reverted. Built on OpenZeppelin Ownable v5 - the
-///      deployer is the administrator.
+///      administrator is set at deployment (the createVoting caller when
+///      deployed through the VotingFactory).
 contract VotingPlus is Ownable {
     /// @notice A participant of the election.
     /// @dev isRegistered is the membership flag: the mapping returns a zeroed
@@ -148,9 +149,14 @@ contract VotingPlus is Ownable {
         _;
     }
 
-    /// @notice The deployer becomes the administrator of the election.
+    /// @notice Creates the election with its name and its administrator.
+    /// @dev The admin is an explicit parameter instead of msg.sender so the
+    ///      contract can be deployed by the VotingFactory: seen from this
+    ///      constructor, msg.sender would then be the factory itself, which
+    ///      must hold no power. Ownable rejects address(0) for free.
     /// @param _title The election name, fixed for the contract's entire life.
-    constructor(string memory _title) Ownable(msg.sender) {
+    /// @param _admin The administrator of this election.
+    constructor(string memory _title, address _admin) Ownable(_admin) {
         uint titleLength = bytes(_title).length;
         require(
             titleLength >= MIN_TITLE_LENGTH,

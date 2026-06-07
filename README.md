@@ -107,7 +107,7 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 
 - Le dépouillement détecte l'égalité (comptage des maximums dans la même boucle, toujours O(n)).
 - En cas d'égalité : `hasWinner` reste `false` pour toujours, l'event `TieDetected(score, nombre d'ex aequo)` est émis, et `getWinner()` échoue avec `ElectionTied` — le contrat ne désigne **aucun** gagnant plutôt que d'en inventer un.
-- **Pas de majorité claire, pas d'action** : l'élection est caduque, on redéploie un nouveau contrat pour revoter.
+- **Pas de majorité claire, pas d'action** : l'élection est caduque, on redéploie un nouveau contrat pour revoter (la factory ci-dessous rend ce redéploiement immédiat).
 - `hasWinner` est nommé pour que sa valeur par défaut soit honnête à tout moment : `false` se lit « pas (encore) de gagnant ».
 
 ### Administrateur immuable
@@ -135,3 +135,20 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - **`Pausable`** : un frein d'urgence donnerait à l'administrateur le pouvoir de geler une session de vote ouverte — pouvoir de censure refusé.
 - **`Ownable2Step`** : sans objet une fois le transfert désactivé (le verrou est plus fort).
 - **Horodatage `createdAt` dans les propositions** : retiré après étude — la date de soumission existe déjà gratuitement dans le bloc qui contient l'event `ProposalRegistered` ; stocker un slot par proposition pour une donnée jamais lue par la logique contredirait la frugalité du contrat.
+
+## La factory — `VotingFactory.sol`
+
+Le constat de départ : un `Voting` / `VotingPlus` ne vaut que pour **une et une seule élection** — la machine à états est à sens unique, et le dépouillement (gagnant ou élection caduque) est un état final définitif. D'où la question : comment une interface (une dapp) pourrait-elle gérer **n élections** — les créer, les retrouver, les piloter — sans redéployer à la main et recopier des adresses à chaque fois ?
+
+La solution : un contrat-usine. La factory devient **la seule adresse que l'interface a besoin de connaître** :
+
+- elle **crée** les élections à la demande : `createVoting("Budget 2026")` déploie un nouveau `VotingPlus` nommé (mot-clé `new` — un contrat qui déploie un contrat) en une transaction ;
+- elle **tient le catalogue** on-chain : le tableau public `deployedVotings`, son compteur `deployedVotingsCount()`, et l'event `VotingCreated` pour l'indexation côté interface ;
+- l'interface pilote ensuite chaque élection à son adresse, avec l'ABI de `VotingPlus`.
+
+Les choix qui vont avec :
+
+- **L'appelant de `createVoting` devient l'administrateur de son élection.** La factory est un service ouvert : elle n'a pas de propriétaire et ne garde aucun pouvoir sur les élections créées — et le verrou de `VotingPlus` rend cela définitif.
+- **Le catalogue vaut double garantie.** Une élection du catalogue exécute exactement le bytecode embarqué par la factory (authenticité du code), et son administrateur a forcément signé sa création — impossible de créer une élection au nom d'autrui via la factory (consentement par signature). Un `VotingPlus` déployé en direct reste possible et fonctionnel, mais hors catalogue : à une application de ne référencer que le catalogue.
+- **Le piège évité** : quand une factory déploie un contrat, le `msg.sender` vu par le constructor est la factory elle-même — c'est pourquoi le constructor de `VotingPlus` prend l'administrateur en paramètre explicite.
+- Ce modèle concrétise « une élection = un contrat » : élection terminée ou caduque → `createVoting` et on repart, chaque élection gardant pour toujours son adresse et son historique.
