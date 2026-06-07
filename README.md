@@ -1,76 +1,18 @@
 # Projet — Smart Contract de Vote
 
-## Contexte
+Smart contract de vote pour une petite organisation (formation Alyra) : liste blanche d'électeurs, soumission de propositions, session de vote puis dépouillement — le tout on-chain.
 
-Un smart contract de vote peut être simple ou complexe, selon les exigences des élections que vous souhaitez soutenir. Le vote peut porter sur un petit nombre de propositions (ou de candidats) présélectionnées, ou sur un nombre potentiellement important de propositions suggérées de manière dynamique par les électeurs eux-mêmes.
+## 🌿 Deux branches, deux versions
 
-Dans ce cadre, vous allez écrire un smart contract de vote pour une petite organisation. Les électeurs, que l'organisation connaît tous, sont inscrits sur une liste blanche (*whitelist*) grâce à leur adresse Ethereum. Ils peuvent soumettre de nouvelles propositions lors d'une session d'enregistrement des propositions, puis voter sur une proposition lors de la session de vote.
+| Branche | Ce qu'elle contient |
+|---|---|
+| **`main`** — *vous êtes ici* | Le rendu **conforme à l'énoncé** : `Voting.sol` seul — déjà soigné (modifiers `onlyOwner`/`onlyVoters`/`onlyDuring`, custom errors, garde-fous anti-blocage, NatSpec complet). |
+| **[`factory`](../../tree/factory)** | Une version **enrichie** qui va au-delà : `VotingPlus.sol` ajoute la gestion des ex aequo (élection caduque), un administrateur verrouillé, des propositions titrées (titre + description + auteur) et la factorisation des transitions (`_transitionTo`) ; plus le contrat-usine **`VotingFactory`** (gérer N élections) et une **dApp web3** (`web/`). |
 
-## Règles du vote
+🔗 **Démo en ligne** (version `factory`) → **[alyra-blockchain-projet-1.onrender.com](https://alyra-blockchain-projet-1.onrender.com/)**
+> Sur **Sepolia**, wallet requis — le service gratuit peut prendre ~1 min à se réveiller au premier chargement.
 
-- ✔️ Le vote n'est **pas secret** pour les utilisateurs ajoutés à la whitelist.
-- ✔️ Chaque électeur peut voir les votes des autres.
-- ✔️ Le gagnant est déterminé à la **majorité simple**.
-- ✔️ La proposition qui obtient le plus de voix l'emporte.
-- ✔️ Le code doit inspirer la confiance et respecter les ordres déterminés.
-
-## Le processus de vote
-
-Voici le déroulement de l'ensemble du processus :
-
-1. L'administrateur du vote enregistre une liste blanche d'électeurs identifiés par leur adresse Ethereum.
-2. L'administrateur du vote commence la session d'enregistrement des propositions.
-3. Les électeurs inscrits sont autorisés à enregistrer leurs propositions tant que la session d'enregistrement est active.
-4. L'administrateur du vote met fin à la session d'enregistrement des propositions.
-5. L'administrateur du vote commence la session de vote.
-6. Les électeurs inscrits votent pour leur proposition préférée.
-7. L'administrateur du vote met fin à la session de vote.
-8. L'administrateur du vote comptabilise les votes.
-9. Tout le monde peut vérifier les derniers détails de la proposition gagnante.
-
-## Recommandations et exigences
-
-- Le smart contract doit s'appeler **`Voting`**.
-- Il doit utiliser la **dernière version** du compilateur.
-- L'**administrateur** est celui qui va déployer le smart contract.
-- Il doit définir les structures de données suivantes :
-
-```solidity
-struct Voter {
-    bool isRegistered;
-    bool hasVoted;
-    uint votedProposalId;
-}
-
-struct Proposal {
-    string description;
-    uint voteCount;
-}
-```
-
-- Il doit définir une énumération qui gère les différents états d'un vote :
-
-```solidity
-enum WorkflowStatus {
-    RegisteringVoters,
-    ProposalsRegistrationStarted,
-    ProposalsRegistrationEnded,
-    VotingSessionStarted,
-    VotingSessionEnded,
-    VotesTallied
-}
-```
-
-- Il doit définir un `uint winningProposalId` qui représente l'id du gagnant, **ou** une fonction `getWinner` qui retourne le gagnant.
-- Il doit importer la librairie [`Ownable`](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/access/Ownable.sol) d'OpenZeppelin.
-- Il doit définir les événements suivants :
-
-```solidity
-event VoterRegistered(address voterAddress);
-event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
-event ProposalRegistered(uint proposalId);
-event Voted(address voter, uint proposalId);
-```
+📄 **Énoncé du projet** → [`docs/ENONCE.md`](docs/ENONCE.md)
 
 ---
 
@@ -122,6 +64,11 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - **La struct `Proposal` s'enrichit** (écart assumé avec la struct imposée, propre à VotingPlus) : `title` — le nom de la proposition, unique et ≥ 3 octets ; `description` — texte libre, peut être vide ; `proposer` — qui l'a soumise (l'event imposé ne le porte pas, et le `msg.sender` stocké reste vrai même via un relayeur).
 - **Les contrôles portent désormais sur le titre de la proposition** (et non plus sur la description) : seuil anti-bruit ≥ 3 octets et anti-doublon par empreinte keccak ; la description, elle, est libre.
 
+### Hygiène interne
+
+- **Les cinq transitions d'état passent par une unique fonction privée** (`_transitionTo`) qui met à jour le statut et émet l'event imposé : une seule source de vérité, impossible de désynchroniser un changement d'état de son événement.
+- **`winningProposalId` est privé** : pendant une élection caduque, il ne contient qu'un résidu de boucle sans signification — `getWinner()` est l'unique chemin de lecture du gagnant, et il ne peut pas mentir.
+
 ### Alternatives étudiées et écartées
 
 - **Départage aléatoire** : pas de hasard fiable on-chain (les sources naïves — `timestamp`, `prevrandao` — sont influençables par le producteur du bloc) ; un oracle d'aléa vérifiable serait disproportionné ici.
@@ -130,3 +77,11 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - **`Pausable`** : un frein d'urgence donnerait à l'administrateur le pouvoir de geler une session de vote ouverte — pouvoir de censure refusé.
 - **`Ownable2Step`** : sans objet une fois le transfert désactivé (le verrou est plus fort).
 - **Horodatage `createdAt` dans les propositions** : retiré après étude — la date de soumission existe déjà gratuitement dans le bloc qui contient l'event `ProposalRegistered` ; stocker un slot par proposition pour une donnée jamais lue par la logique contredirait la frugalité du contrat.
+
+## Réflexion — un PoC de factory
+
+Un `Voting` / `VotingPlus` ne vaut que pour **une seule élection** (machine à états à sens unique, dépouillement terminal). D'où la question : comment une interface gérerait-elle **N élections** sans redéployer à la main et jongler avec les adresses ?
+
+La piste explorée : un contrat-usine `VotingFactory` — `createVoting(titre)` déploie un nouveau `VotingPlus` administré par l'appelant et l'enregistre dans un catalogue public (l'unique adresse qu'une dapp aurait besoin de connaître pour lister, créer et piloter les élections). Une interface web3 (Vue 3 + ethers) en éprouve le système de bout en bout : créer une élection, inscrire des électeurs, faire avancer le workflow, voter, consulter le gagnant.
+
+> 🧪 **PoC sur la branche [`factory`](../../tree/factory)** — hors du périmètre de l'énoncé, gardé à part pour ne pas alourdir le rendu. La [démo en ligne](https://alyra-blockchain-projet-1.onrender.com/) en est déployée.
