@@ -107,7 +107,7 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 
 - Le dépouillement détecte l'égalité (comptage des maximums dans la même boucle, toujours O(n)).
 - En cas d'égalité : `hasWinner` reste `false` pour toujours, l'event `TieDetected(score, nombre d'ex aequo)` est émis, et `getWinner()` échoue avec `ElectionTied` — le contrat ne désigne **aucun** gagnant plutôt que d'en inventer un.
-- Règle alignée sur la pratique des gouvernances on-chain (OpenZeppelin Governor exige `forVotes > againstVotes` : égalité = rejet) : **pas de majorité claire, pas d'action**. L'élection est caduque, on redéploie pour revoter.
+- **Pas de majorité claire, pas d'action** : l'élection est caduque, on redéploie un nouveau contrat pour revoter.
 - `hasWinner` est nommé pour que sa valeur par défaut soit honnête à tout moment : `false` se lit « pas (encore) de gagnant ».
 
 ### Administrateur immuable
@@ -116,6 +116,12 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - L'élection ne peut être ni cédée ni rendue orpheline (un abandon en cours de route gèlerait définitivement les phases restantes — la limite documentée de `Voting.sol` est corrigée ici).
 - Coût assumé : clé d'administrateur perdue = élection morte → redéploiement.
 
+### Élections et propositions nommées
+
+- **Chaque élection porte un nom** (`electionTitle`), fixé au déploiement, sans setter : il ne peut plus jamais changer.
+- **La struct `Proposal` s'enrichit** (écart assumé avec la struct imposée, propre à VotingPlus) : `title` — le nom de la proposition, unique et ≥ 3 octets ; `description` — texte libre, peut être vide ; `proposer` — qui l'a soumise (l'event imposé ne le porte pas, et le `msg.sender` stocké reste vrai même via un relayeur).
+- **Les contrôles portent désormais sur le titre de la proposition** (et non plus sur la description) : seuil anti-bruit ≥ 3 octets et anti-doublon par empreinte keccak ; la description, elle, est libre.
+
 ### Alternatives étudiées et écartées
 
 - **Départage aléatoire** : pas de hasard fiable on-chain (les sources naïves — `timestamp`, `prevrandao` — sont influençables par le producteur du bloc) ; un oracle d'aléa vérifiable serait disproportionné ici.
@@ -123,3 +129,4 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - **Second tour entre ex aequo** : démocratiquement séduisant, écarté pour son rapport complexité/bénéfice (nouveaux états, suivi des tours de vote, re-égalité possible à gérer).
 - **`Pausable`** : un frein d'urgence donnerait à l'administrateur le pouvoir de geler une session de vote ouverte — pouvoir de censure refusé.
 - **`Ownable2Step`** : sans objet une fois le transfert désactivé (le verrou est plus fort).
+- **Horodatage `createdAt` dans les propositions** : retiré après étude — la date de soumission existe déjà gratuitement dans le bloc qui contient l'event `ProposalRegistered` ; stocker un slot par proposition pour une donnée jamais lue par la logique contredirait la frugalité du contrat.

@@ -24,9 +24,16 @@ contract VotingPlus is Ownable {
     }
 
     /// @notice A proposal submitted by a voter.
+    /// @dev Enriched compared to the Voting deliverable (assumed deviation):
+    ///      the title is the unique identity, the description is free text,
+    ///      proposer gives on-chain accountability. No createdAt: submission
+    ///      time is already free in the block holding the ProposalRegistered
+    ///      event - storing it would duplicate chain data.
     struct Proposal {
+        string title;
         string description;
         uint voteCount;
+        address proposer;
     }
 
     /// @notice The election stages, in chronological order.
@@ -41,8 +48,14 @@ contract VotingPlus is Ownable {
         VotesTallied
     }
 
-    /// @notice Minimum byte length accepted for a proposal description (anti-noise).
-    uint constant MIN_DESCRIPTION_LENGTH = 3;
+    /// @notice Minimum byte length accepted for the election title and the
+    ///         proposal titles (anti-noise).
+    uint constant MIN_TITLE_LENGTH = 3;
+
+    /// @notice The human-readable name of this election.
+    /// @dev Set once at deployment, no setter: de facto immutable (the
+    ///      immutable keyword itself only supports value types).
+    string public electionTitle;
 
     /// @notice The current stage of the election, readable by anyone.
     WorkflowStatus public currentWorkflowStatus;
@@ -67,8 +80,9 @@ contract VotingPlus is Ownable {
     ///      as "no winner (yet)".
     bool public hasWinner;
 
-    /// @dev Keccak fingerprints of submitted descriptions, blocks byte-exact duplicates.
-    mapping(bytes32 => bool) private descriptionExists;
+    /// @dev Keccak fingerprints of submitted proposal titles, blocks byte-exact
+    ///      duplicates (the title is the proposal's identity).
+    mapping(bytes32 => bool) private titleExists;
 
     /// @notice Emitted when the administrator whitelists a voter.
     event VoterRegistered(address voterAddress);
@@ -104,8 +118,8 @@ contract VotingPlus is Ownable {
     error NoProposalRegistered();
     /// @notice The voting session cannot close without at least one vote.
     error NoVoteCast();
-    /// @notice The proposal description is shorter than the minimum length.
-    error DescriptionTooShort(uint provided, uint minimum);
+    /// @notice The title is shorter than the minimum length.
+    error TitleTooShort(uint provided, uint minimum);
     /// @notice A byte-identical proposal has already been submitted.
     error DuplicateProposal();
     /// @notice Ownership transfers and renouncement are permanently disabled.
@@ -134,7 +148,15 @@ contract VotingPlus is Ownable {
     }
 
     /// @notice The deployer becomes the administrator of the election.
-    constructor() Ownable(msg.sender) {}
+    /// @param _title The election name, fixed for the contract's entire life.
+    constructor(string memory _title) Ownable(msg.sender) {
+        uint titleLength = bytes(_title).length;
+        require(
+            titleLength >= MIN_TITLE_LENGTH,
+            TitleTooShort(titleLength, MIN_TITLE_LENGTH)
+        );
+        electionTitle = _title;
+    }
 
     /// @notice Disabled: the administrator is the deployer, for the whole life
     ///         of the contract.
@@ -152,9 +174,9 @@ contract VotingPlus is Ownable {
         revert OwnershipLocked();
     }
 
-    /// @notice Returns the winning proposal (description and vote count),
-    ///         callable by anyone once the votes are tallied — reverts with
-    ///         ElectionTied if the election ended on a tie.
+    /// @notice Returns the full winning proposal (title, description, score,
+    ///         proposer), callable by anyone once the votes are tallied —
+    ///         reverts with ElectionTied if the election ended on a tie.
     /// @dev When hasWinner is false, winningProposalId only holds a loop
     ///      residue with no meaning: this getter is the only reliable API.
     ///      Array access needs no defensive check: VotesTallied is only
@@ -176,29 +198,32 @@ contract VotingPlus is Ownable {
     // ==================================================
 
     /// @notice Submit a proposal during the proposals registration stage.
-    /// @dev Rejects descriptions under MIN_DESCRIPTION_LENGTH bytes (byte length,
-    ///      not characters) and byte-exact duplicates (keccak fingerprint,
-    ///      anti vote-splitting). Normalization/trim is a front-end concern.
-    /// @param _description The proposal text.
+    /// @dev The title is the identity: rejected under MIN_TITLE_LENGTH bytes
+    ///      (byte length, not characters) and on byte-exact duplicates (keccak
+    ///      fingerprint, anti vote-splitting). The description is free and may
+    ///      be empty. Normalization/trim is a front-end concern.
+    /// @param _title The proposal identity (unique, >= MIN_TITLE_LENGTH bytes).
+    /// @param _description The proposal body (free text, may be empty).
     function addProposal(
+        string calldata _title,
         string calldata _description
     )
         external
         onlyVoters
         onlyDuring(WorkflowStatus.ProposalsRegistrationStarted)
     {
-        // Checks: anti-noise threshold, then duplicate fingerprint
-        uint descriptionLength = bytes(_description).length;
+        // Checks: anti-noise threshold, then duplicate fingerprint (on title)
+        uint titleLength = bytes(_title).length;
         require(
-            descriptionLength >= MIN_DESCRIPTION_LENGTH,
-            DescriptionTooShort(descriptionLength, MIN_DESCRIPTION_LENGTH)
+            titleLength >= MIN_TITLE_LENGTH,
+            TitleTooShort(titleLength, MIN_TITLE_LENGTH)
         );
-        bytes32 descriptionHash = keccak256(bytes(_description));
-        require(!descriptionExists[descriptionHash], DuplicateProposal());
+        bytes32 titleHash = keccak256(bytes(_title));
+        require(!titleExists[titleHash], DuplicateProposal());
 
         // Effects: record the fingerprint and the proposal (id = its index)
-        descriptionExists[descriptionHash] = true;
-        proposals.push(Proposal(_description, 0));
+        titleExists[titleHash] = true;
+        proposals.push(Proposal(_title, _description, 0, msg.sender));
         uint proposalId = proposals.length - 1;
 
         emit ProposalRegistered(proposalId);
@@ -306,11 +331,10 @@ contract VotingPlus is Ownable {
     ///         winner sets hasWinner; a tie leaves the election without
     ///         winner, forever (void by design).
     /// @dev Naive O(n) scan, acceptable for a small whitelisted organization.
-    ///      Tie policy aligned with on-chain governance practice (e.g.
-    ///      Governor requires forVotes > againstVotes): no clear majority,
-    ///      no action — redeploy to run a new election. The startup noise of
-    ///      zero-vote equalities is harmless: the NoVoteCast guard guarantees
-    ///      the final maximum is >= 1, which resets the tie counter on the way.
+    ///      Tie policy: no clear majority, no action — the election is void,
+    ///      redeploy to run a new one. The startup noise of zero-vote
+    ///      equalities is harmless: the NoVoteCast guard guarantees the final
+    ///      maximum is >= 1, which resets the tie counter on the way.
     function tallyVotes()
         external
         onlyOwner
