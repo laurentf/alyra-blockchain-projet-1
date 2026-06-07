@@ -100,3 +100,38 @@ Une dApp **Vue 3 + Reown AppKit + ethers v6** pilote toute la chaîne depuis le 
 → Détails, architecture, captures d'écran et lancement : [`web/README.md`](web/README.md)
 
 🔗 Démo déployée : **[alyra-blockchain-projet-1.onrender.com](https://alyra-blockchain-projet-1.onrender.com/)**
+
+## Tests (Hardhat)
+
+Suite de tests automatisés sous **Hardhat 3** (mocha + ethers + chai, solc `0.8.34`).
+
+### Installation
+
+```bash
+npm install          # à la racine du dépôt — installe Hardhat et ses dépendances
+```
+
+### Lancer les tests
+
+```bash
+npx hardhat test                      # toute la suite (39 tests)
+npx hardhat test test/VotingPlus.ts   # une seule suite
+```
+
+### Couverture
+
+| Suite | Cas testés |
+|---|---|
+| **`VotingPlus`** (32) | déploiement (+ titre trop court) · whitelist (admin / doublon / hors phase) · workflow complet avec events `WorkflowStatusChange` + transitions illégales + garde-fous liveness (`NoProposalRegistered`, `NoVoteCast`) · propositions (auteur, anti-bruit, anti-doublon, hors phase) · vote (double vote, id invalide, hors phase) · dépouillement **gagnant net vs ex aequo** (`TieDetected` / `ElectionTied`), gagnant à 3 propositions et **égalité partielle** `[2,2,1]` · `getWinner` prématuré · **admin sans privilège de vote** (doit s'inscrire) · **ownership verrouillé** (`OwnershipLocked`) |
+| **`VotingFactory`** (7) | catalogue vide → rempli · event `VotingCreated` · **appelant = administrateur** (≠ factory) · élections indépendantes par appelant · propagation de la validation du titre · **élection fonctionnelle de bout en bout** via la factory |
+
+### Déploiement (Hardhat Ignition)
+
+```bash
+# variables chiffrées dans le keystore Hardhat
+npx hardhat keystore set SEPOLIA_RPC_URL
+npx hardhat keystore set SEPOLIA_PRIVATE_KEY
+
+# déploie la factory (point d'entrée de la dApp)
+npx hardhat ignition deploy ignition/modules/VotingFactory.ts --network sepolia
+```
