@@ -122,6 +122,11 @@ Copie de `Voting.sol` enrichie d'ajouts ciblés — et de refus assumés, qui co
 - **La struct `Proposal` s'enrichit** (écart assumé avec la struct imposée, propre à VotingPlus) : `title` — le nom de la proposition, unique et ≥ 3 octets ; `description` — texte libre, peut être vide ; `proposer` — qui l'a soumise (l'event imposé ne le porte pas, et le `msg.sender` stocké reste vrai même via un relayeur).
 - **Les contrôles portent désormais sur le titre de la proposition** (et non plus sur la description) : seuil anti-bruit ≥ 3 octets et anti-doublon par empreinte keccak ; la description, elle, est libre.
 
+### Hygiène interne
+
+- **Les cinq transitions d'état passent par une unique fonction privée** (`_transitionTo`) qui met à jour le statut et émet l'event imposé : une seule source de vérité, impossible de désynchroniser un changement d'état de son événement.
+- **`winningProposalId` est privé** : pendant une élection caduque, il ne contient qu'un résidu de boucle sans signification — `getWinner()` est l'unique chemin de lecture du gagnant, et il ne peut pas mentir.
+
 ### Alternatives étudiées et écartées
 
 - **Départage aléatoire** : pas de hasard fiable on-chain (les sources naïves — `timestamp`, `prevrandao` — sont influençables par le producteur du bloc) ; un oracle d'aléa vérifiable serait disproportionné ici.

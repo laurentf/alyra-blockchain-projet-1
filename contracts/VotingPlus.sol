@@ -66,9 +66,10 @@ contract VotingPlus is Ownable {
     /// @notice All submitted proposals; a proposal id is its index in this array.
     Proposal[] public proposals;
 
-    /// @notice The id of the winning proposal.
-    /// @dev Only meaningful once VotesTallied — use getWinner(), which enforces it.
-    uint public winningProposalId;
+    /// @dev The id of the winning proposal, written by tallyVotes. Private:
+    ///      during a tie it only holds a meaningless loop residue, so
+    ///      getWinner() is the only way to read the winner — and it cannot lie.
+    uint private winningProposalId;
 
     /// @notice Total number of votes cast (turnout).
     /// @dev Feeds the NoVoteCast liveness guard in closeVotingSession().
@@ -276,10 +277,7 @@ contract VotingPlus is Ownable {
         onlyOwner
         onlyDuring(WorkflowStatus.RegisteringVoters)
     {
-        WorkflowStatus previousStatus = currentWorkflowStatus;
-        currentWorkflowStatus = WorkflowStatus.ProposalsRegistrationStarted;
-
-        emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
+        _transitionTo(WorkflowStatus.ProposalsRegistrationStarted);
     }
 
     /// @notice Closes the proposals registration session (step 4 of the process).
@@ -293,10 +291,7 @@ contract VotingPlus is Ownable {
     {
         require(proposals.length > 0, NoProposalRegistered());
 
-        WorkflowStatus previousStatus = currentWorkflowStatus;
-        currentWorkflowStatus = WorkflowStatus.ProposalsRegistrationEnded;
-
-        emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
+        _transitionTo(WorkflowStatus.ProposalsRegistrationEnded);
     }
 
     /// @notice Opens the voting session (step 5 of the process).
@@ -305,10 +300,7 @@ contract VotingPlus is Ownable {
         onlyOwner
         onlyDuring(WorkflowStatus.ProposalsRegistrationEnded)
     {
-        WorkflowStatus previousStatus = currentWorkflowStatus;
-        currentWorkflowStatus = WorkflowStatus.VotingSessionStarted;
-
-        emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
+        _transitionTo(WorkflowStatus.VotingSessionStarted);
     }
 
     /// @notice Closes the voting session (step 7 of the process).
@@ -321,10 +313,7 @@ contract VotingPlus is Ownable {
     {
         require(votesCount > 0, NoVoteCast());
 
-        WorkflowStatus previousStatus = currentWorkflowStatus;
-        currentWorkflowStatus = WorkflowStatus.VotingSessionEnded;
-
-        emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
+        _transitionTo(WorkflowStatus.VotingSessionEnded);
     }
 
     /// @notice Tallies the votes (step 8 of the process). A single clear
@@ -342,7 +331,8 @@ contract VotingPlus is Ownable {
     {
         uint winningVoteCount = 0;
         uint tiedProposalsCount = 0;
-        for (uint i = 0; i < proposals.length; i++) {
+        uint proposalsLength = proposals.length; // cached: one storage read
+        for (uint i = 0; i < proposalsLength; i++) {
             uint count = proposals[i].voteCount;
             if (count > winningVoteCount) {
                 // new strict maximum: it stands alone
@@ -360,9 +350,18 @@ contract VotingPlus is Ownable {
             emit TieDetected(winningVoteCount, tiedProposalsCount);
         }
 
-        WorkflowStatus previousStatus = currentWorkflowStatus;
-        currentWorkflowStatus = WorkflowStatus.VotesTallied;
+        _transitionTo(WorkflowStatus.VotesTallied);
+    }
 
-        emit WorkflowStatusChange(previousStatus, currentWorkflowStatus);
+    // ==================================================
+    //                 PRIVATE HELPERS
+    // ==================================================
+
+    /// @dev Single source of truth for stage changes: updates the current
+    ///      status and emits the imposed WorkflowStatusChange event.
+    function _transitionTo(WorkflowStatus _next) private {
+        WorkflowStatus previous = currentWorkflowStatus;
+        currentWorkflowStatus = _next;
+        emit WorkflowStatusChange(previous, _next);
     }
 }
