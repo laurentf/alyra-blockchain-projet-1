@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.vite/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Remix / Solidity local artifacts (if synced via remixd)
+.deps/
+artifacts/
+cache/
+.states/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
