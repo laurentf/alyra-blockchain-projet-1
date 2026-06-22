@@ -45,7 +45,7 @@ Smart contract de vote pour une petite organisation (formation Alyra) : liste bl
 - **Contrôle d'accès dans les signatures.** `onlyVoters` et `onlyDuring(statut)` : qui peut appeler, et quand, se lit sur la première ligne de chaque fonction.
 - **Lecture ouverte assumée.** `voters`, `proposals`, `winningProposalId`, `votesCount` sont publics : sur une blockchain publique, `private` ne cache rien — cohérent avec « le vote n'est pas secret ».
 - **`getWinner()` fiable.** Renvoie à tout le monde la proposition gagnante complète (description + score) et échoue avant `VotesTallied` : impossible de lire un gagnant qui n'existe pas encore.
-- **NatSpec complet** (généré avec assistance IA, relu et validé par l'auteur).
+- **NatSpec complet** sur chaque fonction, événement et erreur (intention, `@param`, `@return`).
 
 ## Aller plus loin — `VotingPlus.sol`
 
@@ -100,3 +100,143 @@ Une dApp **Vue 3 + Reown AppKit + ethers v6** pilote toute la chaîne depuis le 
 → Détails, architecture, captures d'écran et lancement : [`web/README.md`](web/README.md)
 
 🔗 Démo déployée : **[alyra-blockchain-projet-1.onrender.com](https://alyra-blockchain-projet-1.onrender.com/)**
+
+## Tests (Hardhat)
+
+Suite de **44 tests** automatisés sous **Hardhat 3** (solc `0.8.34`), répartis sur **deux runners** : **5 tests Solidity** (`forge-std`, par *tests de propriétés* — aussi appelés *fuzzing*) pour la logique pure on-chain, et **39 tests TypeScript** (mocha + ethers v6 + chai) qui couvrent le comportement des contrats, de l'unitaire à l'intégration.
+
+### Installation
+
+```bash
+npm install          # à la racine du dépôt — installe Hardhat et ses dépendances
+```
+
+### Lancer les tests
+
+```bash
+npx hardhat test                       # toute la suite (44 tests : Solidity + TypeScript)
+npx hardhat test solidity              # uniquement les tests de propriétés Solidity
+npx hardhat test mocha                 # uniquement les tests TypeScript
+npx hardhat test mocha test/VotingPlus.ts   # un seul fichier
+```
+
+### Méthodologie — deux runners, deux techniques
+
+Hardhat 3 fournit **deux runners** et `hardhat test` lance les deux. La distinction n'est **pas** « unitaire vs intégration » (ces deux niveaux existent surtout côté TypeScript) mais porte sur la **technique** et la **portée** :
+
+| Runner | Technique | Portée | Couvre ici |
+|---|---|---|---|
+| **Solidity** (`forge-std`) | **tests de propriétés** (*fuzzing*) : entrées aléatoires | unitaire, **logique pure on-chain** (in-EVM) | arithmétique, invariants, unicité des titres, conditions de revert, règle de départage |
+| **TypeScript** (mocha + ethers) | **tests par scénarios** : cas choisis à la main | du **unitaire** (un contrat : `VotingPlus`) à l'**intégration** (factory → contrat enfant : `VotingFactory`) | déploiement, workflow complet, events, erreurs custom, bout-en-bout |
+
+Règle de répartition : *si le test ne sort pas de l'EVM et gagne à explorer des entrées aléatoires → Solidity ; dès qu'il faut plusieurs signataires, décoder des events/erreurs ou orchestrer plusieurs contrats → TypeScript.* Ce n'est pas une cloison étanche, mais chaque runner est **le meilleur sur son terrain**.
+
+**Solidity (`forge-std`) — tests de propriétés (_fuzzing_).** Plutôt que de choisir ses entrées à la main, on énonce une **propriété** et le runner la rejoue avec **des centaines d'entrées aléatoires** (256 par défaut), en vérifiant qu'elle tient pour toutes — il explore donc des cas qu'on n'aurait pas pensé à écrire. On couvre ainsi la longueur de titre, l'unicité des titres, l'exactitude du comptage des votes et la règle de départage (voir liste plus bas). Ces tests sont écrits **façon Foundry** (`forge-std` : contrat de base `Test`, cheatcodes `vm`) mais **exécutés par le runner Solidity natif de Hardhat 3** (`hardhat test solidity`) — Foundry n'est ni installé ni requis ; `forge-std` n'est qu'une **dépendance npm** de helpers.
+
+> **Pourquoi c'est important.** Sur du code critique (fonds, contrôle d'accès, arithmétique), le fuzzing est une pratique de **sécurité** clé : explorer l'espace des entrées met au jour des cas limites — et parfois des failles — qu'une poignée de tests choisis manque. Nuance honnête : il **augmente la confiance**, il ne *prouve* pas l'absence de bug (l'*invariant testing*, des fuzzers dédiés comme Echidna/Medusa, ou un audit vont plus loin).
+
+**TypeScript (mocha + ethers) — tests par scénarios.** `VotingPlus.ts` couvre le contrat **fonction par fonction** (unitaire) ; `VotingFactory.ts` ajoute l'**intégration** : une factory qui déploie un contrat enfant dont on relit l'`owner` puis qu'on pilote de bout en bout. Plusieurs signataires (administrateur / électeurs / tiers), des **événements** à contrôler (`expect(...).to.emit(...).withArgs(...)`) et des **erreurs custom** à décoder (`revertedWithCustomError(...).withArgs(...)`) : ethers + les matchers chai expriment tout cela depuis l'extérieur via l'ABI.
+
+**Pourquoi ces propriétés en Solidity plutôt qu'en TypeScript :**
+
+- **Le fuzzing est natif côté Solidity** : les paramètres de la fonction de test *sont* les entrées aléatoires, avec `vm.assume` / `bound` pour cadrer le domaine. En TypeScript il faudrait une bibliothèque externe **et** un aller-retour JS↔EVM par itération → des centaines de transactions, lent et lourd.
+- **Tout reste dans l'EVM** : ces propriétés (arithmétique, invariant de comptage, condition de revert) ne touchent ni à l'off-chain ni à de l'orchestration — les écrire en TypeScript n'apporterait rien et ajouterait du bruit.
+- **Vérité unique** : la propriété attendue est recalculée en Solidity à partir des décomptes, puis comparée au résultat du contrat — aucune valeur « magique » codée en dur.
+
+**Bonnes pratiques côté TypeScript :**
+
+- **Contextes via `loadFixture`** : chaque scénario (déploiement nu, propositions ouvertes, session de vote ouverte…) est une *fixture* déployée **une seule fois** puis **restaurée par snapshot** avant chaque `it` qui la réutilise — isolation stricte (aucun état partagé entre deux tests) et exécution plus rapide qu'un redéploiement systématique.
+- **Typage de bout en bout, zéro `any`** : signataires (`HardhatEthersSigner`) et contrats sont entièrement typés via les bindings ethers que Hardhat génère sous `types/` au moment du `compile` (dossier généré, donc non versionné) — l'autocomplétion couvre méthodes, structs et erreurs custom, `.connect(signer)` inclus.
+
+### Liste des tests
+
+#### Tests TypeScript (`mocha` + `ethers`) — par scénarios
+
+**`test/VotingPlus.ts` — 32 tests unitaires** (un seul contrat)
+
+| Groupe | Test (`it`) | Vérifie |
+|---|---|---|
+| Deployment | initialise l'état | titre, `owner`, statut `RegisteringVoters`, `hasWinner=false`, `votesCount=0` |
+| Deployment | titre trop court | revert `TitleTooShort(2, 3)` au déploiement |
+| registerVoter | inscrit un électeur | `isRegistered=true` + event `VoterRegistered` |
+| registerVoter | non-admin | revert `OwnableUnauthorizedAccount` |
+| registerVoter | doublon | revert `VoterAlreadyRegistered` |
+| registerVoter | hors phase | revert `WrongWorkflowStatus` |
+| Workflow | happy path complet | les 5 transitions + events `WorkflowStatusChange` |
+| Workflow | non-admin | revert `OwnableUnauthorizedAccount` |
+| Workflow | saut d'étape interdit | revert `WrongWorkflowStatus` |
+| Workflow | ≥ 1 proposition requise | revert `NoProposalRegistered` |
+| Workflow | ≥ 1 vote requis | revert `NoVoteCast` |
+| addProposal | enregistre + auteur | struct (titre/desc/voteCount/proposer) + `ProposalRegistered(0)` |
+| addProposal | description vide | acceptée |
+| addProposal | non-électeur | revert `VoterNotRegistered` |
+| addProposal | titre trop court | revert `TitleTooShort(2, 3)` |
+| addProposal | doublon de titre | revert `DuplicateProposal` |
+| addProposal | hors phase | revert `WrongWorkflowStatus` |
+| vote | enregistre le vote | `voteCount`, `votesCount`, `hasVoted`, `votedProposalId` + event `Voted` |
+| vote | non-électeur | revert `VoterNotRegistered` |
+| vote | double vote | revert `AlreadyVoted` |
+| vote | id invalide | revert `InvalidProposalId(42)` |
+| vote | hors phase | revert `WrongWorkflowStatus` |
+| tally / getWinner | `getWinner` prématuré | revert `WrongWorkflowStatus` |
+| tally / getWinner | gagnant net | `hasWinner=true`, gagnant + score corrects |
+| tally / getWinner | ex aequo total | `TieDetected(1, 2)`, `hasWinner=false`, `getWinner` → `ElectionTied` |
+| tally / getWinner | dépouillement non-admin | revert `OwnableUnauthorizedAccount` |
+| tally / getWinner | 3 propositions `[3,1,1]` | gagnant net désigné |
+| tally / getWinner | égalité partielle `[2,2,1]` | `TieDetected(2, 2)` → élection caduque |
+| Roles | admin non inscrit | ne peut pas voter → `VoterNotRegistered(admin)` |
+| Roles | admin auto-inscrit | peut voter comme tout le monde → `Voted(admin, 0)` |
+| Locked ownership | `transferOwnership` | revert `OwnershipLocked` |
+| Locked ownership | `renounceOwnership` | revert `OwnershipLocked` |
+
+**`test/VotingFactory.ts` — 7 tests d'intégration** (factory → contrat enfant)
+
+| Test (`it`) | Vérifie |
+|---|---|
+| catalogue vide | `deployedVotingsCount() == 0` |
+| crée et catalogue | event `VotingCreated` + `deployedVotingsCount() == 1` |
+| event complet | `VotingCreated(adresse, appelant, titre)` |
+| appelant = administrateur | `owner == appelant` (≠ factory), titre + statut initial corrects |
+| élections indépendantes | deux appelants → deux élections aux `owner` distincts |
+| validation propagée | titre trop court via la factory → revert `TitleTooShort` |
+| bout en bout | élection complète pilotée via la factory → gagnant désigné |
+
+#### Tests Solidity (`forge-std`) — tests de propriétés, unitaire
+
+**`test/VotingPlus.t.sol` — 5 tests de propriétés** (256 exécutions aléatoires chacun, _fuzzing_)
+
+| Test | Propriété vérifiée pour **toute** entrée |
+|---|---|
+| `constructorRejectsShortTitle` | titre de moins de 3 octets → revert `TitleTooShort(longueur, 3)` |
+| `constructorAcceptsLongEnoughTitle` | titre de 3 octets ou plus → accepté et stocké tel quel |
+| `duplicateProposalTitleAlwaysReverts` | un titre déjà soumis (quelles que soient les descriptions) → revert `DuplicateProposal` |
+| `voteAccountingInvariant` | `votesCount == Σ des voteCount == nombre de votants`, et chaque décompte par proposition est exact |
+| `winnerIffUniqueStrictMax` | `hasWinner` est vrai **si et seulement si** une seule proposition domine ; toute égalité en tête → `ElectionTied` |
+
+### Couverture
+
+Chaque fonction publique des deux contrats est couverte sur ses **trois axes** : chemin nominal (effets d'état + event émis), contrôle d'accès (`onlyOwner` / `onlyVoters`), et garde de phase (`onlyDuring` → `WrongWorkflowStatus`). S'y ajoutent les cas limites du dépouillement (ex aequo total, ex aequo partiel, gagnant net à ≥ 3 propositions), les garde-fous anti-blocage (`NoProposalRegistered`, `NoVoteCast`) et le verrou d'`ownership`.
+
+Couverture mesurée (instrumentation native de Hardhat 3) :
+
+```bash
+npx hardhat test --coverage     # rapport console + HTML dans coverage/html
+```
+
+| Contrat | Lignes | Instructions |
+|---|---:|---:|
+| **`VotingPlus.sol`** | **100 %** | **100 %** |
+| **`VotingFactory.sol`** | **100 %** | **100 %** |
+
+> `Voting.sol` (la version conforme à l'énoncé, portée par la branche `main`) est présente mais hors périmètre des tests de cette branche : `VotingPlus.sol` en est la copie durcie.
+
+### Déploiement (Hardhat Ignition)
+
+```bash
+# variables chiffrées dans le keystore Hardhat
+npx hardhat keystore set SEPOLIA_RPC_URL
+npx hardhat keystore set SEPOLIA_PRIVATE_KEY
+
+# déploie la factory (point d'entrée de la dApp)
+npx hardhat ignition deploy ignition/modules/VotingFactory.ts --network sepolia
+```
